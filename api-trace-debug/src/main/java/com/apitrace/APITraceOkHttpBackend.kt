@@ -16,8 +16,16 @@ class APITraceOkHttpBackend(
 ) : APITraceBackend {
     private val buffer = CopyOnWriteArrayList<APITraceRecord>()
 
+    @Volatile
+    private var isEnabled = false
+
     val interceptor: Interceptor = Interceptor { chain ->
         val request = chain.request()
+
+        if (!isEnabled) {
+            return@Interceptor chain.proceed(request)
+        }
+
         val startNs = System.nanoTime()
         val startedAtEpochMs = System.currentTimeMillis()
 
@@ -55,8 +63,13 @@ class APITraceOkHttpBackend(
         }
     }
 
-    override fun start() {}
-    override fun stop() {}
+    override fun start() {
+        isEnabled = true
+    }
+
+    override fun stop() {
+        isEnabled = false
+    }
 
     override fun clear() {
         buffer.clear()

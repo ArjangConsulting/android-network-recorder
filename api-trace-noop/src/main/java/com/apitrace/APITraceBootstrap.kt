@@ -9,6 +9,7 @@ object APITraceBootstrap {
         okHttpBuilder: OkHttpClient.Builder,
         maxRecords: Int = 500,
         redactor: APITraceRedactor = APITraceRedactor.DEFAULT,
+        maxBodyBytes: Long = 64 * 1024,
     ) {
         @Suppress("UNUSED_PARAMETER")
         val unusedBuilder = okHttpBuilder
@@ -16,6 +17,8 @@ object APITraceBootstrap {
         val unusedMaxRecords = maxRecords
         @Suppress("UNUSED_PARAMETER")
         val unusedRedactor = redactor
+        @Suppress("UNUSED_PARAMETER")
+        val unusedMaxBodyBytes = maxBodyBytes
         APITrace.install(APITraceNoopBackend())
     }
 }

@@ -9,8 +9,13 @@ object APITraceBootstrap {
         okHttpBuilder: OkHttpClient.Builder,
         maxRecords: Int = 500,
         redactor: APITraceRedactor = APITraceRedactor.DEFAULT,
+        maxBodyBytes: Long = 64 * 1024,
     ) {
-        val backend = APITraceOkHttpBackend(maxRecords = maxRecords, redactor = redactor)
+        val backend = APITraceOkHttpBackend(
+            maxRecords = maxRecords,
+            redactor = redactor,
+            maxBodyBytes = maxBodyBytes,
+        )
         okHttpBuilder.addNetworkInterceptor(backend.interceptor)
         APITrace.install(backend)
     }
