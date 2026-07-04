@@ -52,6 +52,7 @@ class App : Application() {
 - `APITrace.clear()`
 - `APITrace.records()`
 - `APITrace.exportJson(pretty)`
+- `APITrace.exportHar(pretty)`
 - `APITraceRedactor(headerRules, queryItemRules, replacement)`
 - `APITraceBootstrap.install(...)` (from debug/noop module)
 
