@@ -65,7 +65,7 @@ Each record is one full exchange (request + response/failure):
 ```json
 {
   "id": "...",
-  "startedAtEpochMs": 1772687230000,
+  "startedAt": "2026-03-05T03:27:10.123Z",
   "durationMs": 84,
   "method": "GET",
   "url": "https://api.example.com/v1/users?page=1&token=%3Cmocked%3E",
@@ -105,6 +105,9 @@ Each record is one full exchange (request + response/failure):
   "errorMessage": null
 }
 ```
+
+The Kotlin model stores `startedAtEpochMs` (epoch milliseconds); exports serialize it as
+ISO 8601 `startedAt` with millisecond precision to match the iOS SDK's wire format.
 
 ### Header Behavior
 

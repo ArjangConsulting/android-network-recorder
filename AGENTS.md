@@ -27,7 +27,7 @@ This file is the canonical agent guide for the repo.
 - `api-trace-noop` must preserve the same bootstrap shape without recording traffic.
 - Keep request metadata capture opt-in through `APITraceRedactor`.
 - Preserve existing interceptor behavior and ordering unless there is a clear requirement to change it.
-- If you change exported JSON behavior, consider the iOS counterpart before finalizing. Android exports `startedAtEpochMs` as epoch milliseconds; iOS exports `startedAt` as ISO 8601.
+- If you change exported JSON behavior, consider the iOS counterpart before finalizing. Both platforms export `startedAt` as ISO 8601 with millisecond precision — keep the wire format identical.
 - When public behavior or integration changes, update `README.md`.
 - This repo ships an SDK, not a sample app. Avoid app-specific assumptions in code or docs.
 

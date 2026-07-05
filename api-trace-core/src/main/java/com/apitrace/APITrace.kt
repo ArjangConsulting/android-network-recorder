@@ -35,13 +35,15 @@ object APITrace {
     fun records(): List<APITraceRecord> = backend.records()
 
     /** Exports captured exchanges as JSON. */
-    fun exportJson(pretty: Boolean = true): String {
+    fun exportJson(pretty: Boolean = true): String = jsonString(records(), pretty)
+
+    internal fun jsonString(records: List<APITraceRecord>, pretty: Boolean = true): String {
         val array = JSONArray()
 
-        records().forEach { record ->
+        records.forEach { record ->
             val obj = JSONObject()
             obj.put("id", record.id)
-            obj.put("startedAtEpochMs", record.startedAtEpochMs)
+            obj.put("startedAt", epochMsToIso8601(record.startedAtEpochMs))
             obj.put("durationMs", record.durationMs)
             obj.put("method", record.method)
             obj.put("url", record.url)
