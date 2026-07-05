@@ -4,6 +4,7 @@ import okhttp3.Interceptor
 import okhttp3.Request
 import okhttp3.Response
 import okio.Buffer
+import okio.ByteString.Companion.toByteString
 import java.io.IOException
 import java.util.Collections
 import java.util.concurrent.CopyOnWriteArrayList
@@ -13,6 +14,9 @@ class APITraceOkHttpBackend(
     private val maxRecords: Int = 500,
     private val redactor: APITraceRedactor = APITraceRedactor.DEFAULT,
     private val maxBodyBytes: Long = 64 * 1024,
+    private val captureRequestBodies: Boolean = true,
+    private val captureResponseBodies: Boolean = true,
+    private val allowInNonDebuggableBuilds: Boolean = false,
 ) : APITraceBackend {
     private val buffer = CopyOnWriteArrayList<APITraceRecord>()
 
@@ -56,7 +60,7 @@ class APITraceOkHttpBackend(
                     endpoint = request.url.encodedPath,
                     request = requestCapture,
                     response = null,
-                    errorMessage = ioe.message,
+                    errorMessage = ioe.message?.let(redactor::redactErrorMessage),
                 )
             )
             throw ioe
@@ -64,6 +68,12 @@ class APITraceOkHttpBackend(
     }
 
     override fun start() {
+        if (!allowInNonDebuggableBuilds && !isDebuggableApp()) {
+            // Defense in depth for a misconfigured release build: never capture user
+            // traffic unless the host app is debuggable or explicitly opted in.
+            logRefusal()
+            return
+        }
         isEnabled = true
     }
 
@@ -84,7 +94,7 @@ class APITraceOkHttpBackend(
         redactedUrl: APITraceRedactedUrl,
     ): APITraceRecord.RequestData {
         val headers = redactor.redact(request.headers.toMultimap())
-        val bodyCapture = extractRequestBody(request)
+        val bodyCapture = if (captureRequestBodies) extractRequestBody(request) else BodyCapture()
 
         return APITraceRecord.RequestData(
             headers = headers,
@@ -95,8 +105,8 @@ class APITraceOkHttpBackend(
     }
 
     private fun buildResponseCapture(response: Response): APITraceRecord.ResponseData {
-        val headers = response.headers.toMultimap()
-        val bodyCapture = peekResponseBody(response)
+        val headers = redactor.redactResponseHeaders(response.headers.toMultimap())
+        val bodyCapture = if (captureResponseBodies) peekResponseBody(response) else BodyCapture()
 
         return APITraceRecord.ResponseData(
             statusCode = response.code,
@@ -130,31 +140,71 @@ class APITraceOkHttpBackend(
         }
 
         return runCatching {
-            val buffer = Buffer()
-            body.writeTo(buffer)
-            decodeBytes(buffer.readByteArray())
+            val sink = Buffer()
+            body.writeTo(sink)
+            val truncated = sink.size > maxBodyBytes
+            decodeBytes(sink.readByteArray(minOf(sink.size, maxBodyBytes)), truncated)
         }.getOrElse { BodyCapture() }
     }
 
     private fun peekResponseBody(response: Response): BodyCapture {
         val body = response.body ?: return BodyCapture()
 
+        // peekBody blocks until maxBodyBytes arrive or the stream ends, which would
+        // stall server-sent events and other never-ending responses.
+        if (response.code == 101 || isEventStream(response.header("Content-Type"))) {
+            return BodyCapture()
+        }
+
         return runCatching {
             val peeked = response.peekBody(maxBodyBytes)
-            decodeBytes(peeked.bytes())
+            val bytes = peeked.bytes()
+            decodeBytes(bytes, truncated = bytes.size.toLong() >= maxBodyBytes)
         }.getOrElse { BodyCapture() }
     }
 
-    private fun decodeBytes(bytes: ByteArray): BodyCapture {
+    private fun isEventStream(contentType: String?): Boolean {
+        return contentType?.substringBefore(';')?.trim()
+            .equals("text/event-stream", ignoreCase = true)
+    }
+
+    private fun decodeBytes(bytes: ByteArray, truncated: Boolean): BodyCapture {
         if (bytes.isEmpty()) {
             return BodyCapture()
         }
 
-        val text = bytes.toString(Charsets.UTF_8)
-        return if (text.toByteArray(Charsets.UTF_8).contentEquals(bytes)) {
-            BodyCapture(text = text)
-        } else {
-            BodyCapture(base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP))
+        // A byte-limit cut can split a multi-byte UTF-8 character; drop the partial
+        // trailing character instead of misclassifying the body as binary.
+        val maxTrim = if (truncated) minOf(3, bytes.size - 1) else 0
+        for (trim in 0..maxTrim) {
+            val candidate = if (trim == 0) bytes else bytes.copyOf(bytes.size - trim)
+            val text = candidate.toString(Charsets.UTF_8)
+            if (text.toByteArray(Charsets.UTF_8).contentEquals(candidate)) {
+                return BodyCapture(text = text)
+            }
+        }
+
+        return BodyCapture(base64 = bytes.toByteString().base64())
+    }
+
+    private fun isDebuggableApp(): Boolean {
+        return runCatching {
+            val application = Class.forName("android.app.ActivityThread")
+                .getMethod("currentApplication")
+                .invoke(null) as? android.content.Context
+                ?: return@runCatching true
+            val flags = application.applicationInfo.flags
+            (flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        }.getOrDefault(true)
+    }
+
+    private fun logRefusal() {
+        runCatching {
+            android.util.Log.w(
+                "APITrace",
+                "start() ignored: app is not debuggable. Use the api-trace-noop module in " +
+                    "release builds, or opt in with allowInNonDebuggableBuilds = true.",
+            )
         }
     }
 

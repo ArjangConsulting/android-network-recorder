@@ -1,5 +1,6 @@
 package com.apitrace
 
+import okio.ByteString.Companion.decodeBase64
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -9,6 +10,7 @@ object APITrace {
     private var backend: APITraceBackend = APITraceNoopBackend()
 
     /** Installs a backend implementation, usually during app startup. */
+    @Synchronized
     fun install(backend: APITraceBackend) {
         this.backend.stop()
         this.backend = backend
@@ -101,7 +103,10 @@ object APITrace {
         val bodyText = record.request.bodyText
         if (bodyText != null) {
             val postData = JSONObject()
-            postData.put("mimeType", "")
+            val contentType = record.request.headers.entries
+                .firstOrNull { it.key.equals("Content-Type", ignoreCase = true) }
+                ?.value?.values?.firstOrNull()
+            postData.put("mimeType", harMimeType(contentType))
             postData.put("text", bodyText)
             obj.put("postData", postData)
         }
@@ -115,17 +120,46 @@ object APITrace {
         obj.put("httpVersion", "HTTP/1.1")
         obj.put("headers", headersToHarArray(response.headers))
         obj.put("cookies", JSONArray())
-        val mimeType = response.headers["Content-Type"]?.firstOrNull()
-            ?.split(";")?.firstOrNull()?.trim() ?: ""
+        val mimeType = harMimeType(firstHeaderValue("Content-Type", response.headers))
         val content = JSONObject()
-        content.put("size", -1)
+        val bodyText = response.bodyText
+        val bodyBase64 = response.bodyBase64
+        when {
+            bodyText != null -> {
+                content.put("size", bodyText.toByteArray(Charsets.UTF_8).size)
+                content.put("text", bodyText)
+            }
+            bodyBase64 != null -> {
+                // HAR 1.2: binary content is carried as base64 text with an encoding marker.
+                content.put("size", decodedBase64Size(bodyBase64))
+                content.put("text", bodyBase64)
+                content.put("encoding", "base64")
+            }
+            else -> {
+                content.put("size", 0)
+                content.put("text", JSONObject.NULL)
+            }
+        }
         content.put("mimeType", mimeType)
-        content.put("text", response.bodyText ?: JSONObject.NULL)
         obj.put("content", content)
-        obj.put("redirectURL", "")
+        obj.put("redirectURL", firstHeaderValue("Location", response.headers) ?: "")
         obj.put("headersSize", -1)
         obj.put("bodySize", -1)
         return obj
+    }
+
+    private fun firstHeaderValue(name: String, headers: Map<String, List<String>>): String? {
+        return headers.entries
+            .firstOrNull { it.key.equals(name, ignoreCase = true) }
+            ?.value?.firstOrNull()
+    }
+
+    private fun harMimeType(contentType: String?): String {
+        return contentType?.split(";")?.firstOrNull()?.trim() ?: ""
+    }
+
+    private fun decodedBase64Size(base64: String): Int {
+        return base64.decodeBase64()?.size ?: 0
     }
 
     private fun failedHarResponse(): JSONObject {
@@ -136,7 +170,7 @@ object APITrace {
         obj.put("headers", JSONArray())
         obj.put("cookies", JSONArray())
         val content = JSONObject()
-        content.put("size", -1)
+        content.put("size", 0)
         content.put("mimeType", "")
         content.put("text", JSONObject.NULL)
         obj.put("content", content)

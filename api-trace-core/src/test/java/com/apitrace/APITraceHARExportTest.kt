@@ -112,6 +112,60 @@ class APITraceHARExportTest {
         val content = response.getJSONObject("content")
         assertEquals("""{"ok":true}""", content.getString("text"))
         assertEquals("application/json", content.getString("mimeType"))
+        assertEquals("""{"ok":true}""".toByteArray(Charsets.UTF_8).size, content.getInt("size"))
+        assertFalse(content.has("encoding"))
+    }
+
+    @Test
+    fun binaryResponseBodyExportedAsBase64WithEncodingMarker() {
+        val base64 = okio.ByteString.of(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte()).base64()
+        val binary = record.copy(
+            response = APITraceRecord.ResponseData(
+                statusCode = 200,
+                // toMultimap() lowercases header names; the exporter must still find Content-Type.
+                headers = mapOf("content-type" to listOf("image/jpeg")),
+                bodyText = null,
+                bodyBase64 = base64,
+            )
+        )
+        val entry = har(listOf(binary)).getJSONObject("log").getJSONArray("entries").getJSONObject(0)
+        val content = entry.getJSONObject("response").getJSONObject("content")
+        assertEquals(base64, content.getString("text"))
+        assertEquals("base64", content.getString("encoding"))
+        assertEquals(4, content.getInt("size"))
+        assertEquals("image/jpeg", content.getString("mimeType"))
+    }
+
+    @Test
+    fun locationHeaderBecomesRedirectUrl() {
+        val redirect = record.copy(
+            response = APITraceRecord.ResponseData(
+                statusCode = 301,
+                headers = mapOf("location" to listOf("https://api.example.com/new")),
+            )
+        )
+        val entry = har(listOf(redirect)).getJSONObject("log").getJSONArray("entries").getJSONObject(0)
+        assertEquals("https://api.example.com/new", entry.getJSONObject("response").getString("redirectURL"))
+    }
+
+    @Test
+    fun postDataMimeTypeTakenFromCapturedContentTypeHeader() {
+        val posted = record.copy(
+            method = "POST",
+            request = APITraceRecord.RequestData(
+                headers = mapOf(
+                    "Content-Type" to APITraceCapturedField(
+                        APITraceCaptureMode.EXACT,
+                        listOf("application/json; charset=utf-8"),
+                    )
+                ),
+                bodyText = """{"name":"x"}""",
+            )
+        )
+        val entry = har(listOf(posted)).getJSONObject("log").getJSONArray("entries").getJSONObject(0)
+        val postData = entry.getJSONObject("request").getJSONObject("postData")
+        assertEquals("application/json", postData.getString("mimeType"))
+        assertEquals("""{"name":"x"}""", postData.getString("text"))
     }
 
     @Test

@@ -1,11 +1,18 @@
 package com.apitrace
 
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okio.Buffer
+import okio.GzipSink
+import okio.buffer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -26,7 +33,7 @@ class APITraceOkHttpBackendTest {
     }
 
     private fun clientFor(backend: APITraceOkHttpBackend): OkHttpClient =
-        OkHttpClient.Builder().addNetworkInterceptor(backend.interceptor).build()
+        OkHttpClient.Builder().addInterceptor(backend.interceptor).build()
 
     private fun executeRequest(client: OkHttpClient) {
         val request = Request.Builder().url(server.url("/ping")).build()
@@ -107,6 +114,124 @@ class APITraceOkHttpBackendTest {
             "Captured body (${capturedText.length} bytes) must not exceed maxBodyBytes",
             capturedText.toByteArray(Charsets.UTF_8).size <= 10,
         )
+    }
+
+    @Test
+    fun `request bodies are captured`() {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
+        val backend = APITraceOkHttpBackend()
+        val client = clientFor(backend)
+
+        backend.start()
+        val payload = """{"name":"widget"}"""
+        val request = Request.Builder()
+            .url(server.url("/items"))
+            .post(payload.toRequestBody("application/json".toMediaType()))
+            .build()
+        client.newCall(request).execute().close()
+
+        val record = backend.records().single()
+        assertEquals(payload, record.request.bodyText)
+    }
+
+    @Test
+    fun `request body capture is truncated to maxBodyBytes`() {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
+        val backend = APITraceOkHttpBackend(maxBodyBytes = 10)
+        val client = clientFor(backend)
+
+        backend.start()
+        val request = Request.Builder()
+            .url(server.url("/items"))
+            .post("y".repeat(200).toRequestBody("text/plain".toMediaType()))
+            .build()
+        client.newCall(request).execute().close()
+
+        val record = backend.records().single()
+        val capturedText = requireNotNull(record.request.bodyText)
+        assertTrue(capturedText.toByteArray(Charsets.UTF_8).size <= 10)
+    }
+
+    @Test
+    fun `body capture can be disabled while metadata is still recorded`() {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
+        val backend = APITraceOkHttpBackend(captureRequestBodies = false, captureResponseBodies = false)
+        val client = clientFor(backend)
+
+        backend.start()
+        val request = Request.Builder()
+            .url(server.url("/items"))
+            .post("secret-payload".toRequestBody("text/plain".toMediaType()))
+            .build()
+        client.newCall(request).execute().close()
+
+        val record = backend.records().single()
+        assertNull(record.request.bodyText)
+        assertNull(record.request.bodyBase64)
+        assertNull(record.response?.bodyText)
+        assertNull(record.response?.bodyBase64)
+        assertEquals(200, record.response?.statusCode)
+    }
+
+    @Test
+    fun `sensitive response headers are redacted by default`() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .addHeader("Set-Cookie", "session=super-secret; HttpOnly")
+                .addHeader("X-Request-Id", "req-7")
+                .setBody("ok")
+        )
+        val backend = APITraceOkHttpBackend()
+        val client = clientFor(backend)
+
+        backend.start()
+        executeRequest(client)
+
+        val headers = requireNotNull(backend.records().single().response?.headers)
+        assertEquals(listOf("<mocked>"), headers["set-cookie"])
+        assertEquals(listOf("req-7"), headers["x-request-id"])
+    }
+
+    @Test
+    fun `gzip response bodies are captured decoded`() {
+        val payload = """{"ok":true}"""
+        val gzipped = Buffer()
+        GzipSink(gzipped).buffer().use { it.writeUtf8(payload) }
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .addHeader("Content-Encoding", "gzip")
+                .setBody(gzipped)
+        )
+        val backend = APITraceOkHttpBackend()
+        val client = clientFor(backend)
+
+        backend.start()
+        executeRequest(client)
+
+        val record = backend.records().single()
+        assertEquals(
+            "Application-level capture must observe the transparently gunzipped body",
+            payload,
+            record.response?.bodyText,
+        )
+    }
+
+    @Test
+    fun `binary response bodies are captured as base64`() {
+        val bytes = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte())
+        val body = Buffer().write(bytes)
+        server.enqueue(MockResponse().setResponseCode(200).setBody(body))
+        val backend = APITraceOkHttpBackend()
+        val client = clientFor(backend)
+
+        backend.start()
+        executeRequest(client)
+
+        val record = backend.records().single()
+        assertNull(record.response?.bodyText)
+        assertNotNull(record.response?.bodyBase64)
     }
 
     @Test

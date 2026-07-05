@@ -53,8 +53,8 @@ class App : Application() {
 - `APITrace.records()`
 - `APITrace.exportJson(pretty)`
 - `APITrace.exportHar(pretty)`
-- `APITraceRedactor(headerRules, queryItemRules, replacement)`
-- `APITraceBootstrap.install(okHttpBuilder, maxRecords, redactor, maxBodyBytes)` (from debug/noop module)
+- `APITraceRedactor(headerRules, queryItemRules, responseHeaderRules, replacement)`
+- `APITraceBootstrap.install(okHttpBuilder, maxRecords, redactor, maxBodyBytes, captureRequestBodies, captureResponseBodies, allowInNonDebuggableBuilds)` (from debug/noop module)
 
 All public symbols are documented with KDoc in `api-trace-core` and public bootstrap classes.
 
@@ -111,6 +111,12 @@ Each record is one full exchange (request + response/failure):
 - Request headers are opt-in via `headerRules`.
 - `EXACT` preserves the original value.
 - `INCLUDES` stores only presence semantics using the configured replacement value.
+- Response headers are captured by default, except credential-bearing headers
+  (`Set-Cookie`, `Set-Cookie2`, `Authorization`, `Proxy-Authenticate`, `WWW-Authenticate`),
+  which are replaced with the replacement value. Override via `responseHeaderRules`
+  (`EXACT` opts a default back in; `INCLUDES` redacts additional headers).
+- OkHttp's `toMultimap()` lowercases stored header names; rule matching is
+  case-insensitive either way.
 
 ### Query Behavior
 
@@ -140,6 +146,20 @@ APITraceBootstrap.install(
 
 ## Notes
 
-- Debug module installs a network interceptor.
-- Response body capture uses `peekBody` with a size cap (`maxBodyBytes`, default 64 KB) to avoid consuming the stream.
+- Debug module installs an **application** interceptor, so captured response bodies are
+  observed after OkHttp's transparent gzip decoding. Redirects are followed inside OkHttp,
+  so one record covers the whole call and reflects the final response.
+- Response body capture uses `peekBody` with a size cap (`maxBodyBytes`, default 64 KB) to
+  avoid consuming the stream. Request bodies are capped at the same limit. Body capture is
+  skipped for `text/event-stream` responses and protocol upgrades (101), which would
+  otherwise stall streaming.
+- Bodies are stored verbatim — there is no field-level body redaction. Disable capture with
+  `captureRequestBodies = false` / `captureResponseBodies = false` for endpoints that
+  exchange credentials if that is a concern.
+- `start()` refuses to enable capture when the host app is not debuggable, as defense in
+  depth against the debug module accidentally shipping in a release build. Internal
+  non-debuggable QA builds can opt in with `allowInNonDebuggableBuilds = true`.
+- Error messages are sanitized: query strings in embedded URLs are stripped before storage.
+- Records live in memory only; exports (`exportJson`/`exportHar`) still contain captured
+  response data, so treat exported files as sensitive.
 - Capture only happens between `APITrace.start()` and `APITrace.stop()`; the interceptor still forwards every request when capture is disabled.
