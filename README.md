@@ -26,6 +26,10 @@ Publishing is triggered by pushing a bare SemVer tag such as `2.0.0`. The reposi
 define `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_PASSWORD`, `MAVEN_SIGNING_KEY`, and
 `MAVEN_SIGNING_PASSWORD` Actions secrets before the first release.
 
+Release Please uses the `RELEASE_PLEASE_TOKEN` Actions secret because the organization
+restricts the built-in `GITHUB_TOKEN` to read-only access. The fine-grained token needs
+repository `Contents: Read and write` and `Pull requests: Read and write` permissions.
+
 ## Integrate In App Startup
 
 ```kotlin
