@@ -4,21 +4,31 @@ import okhttp3.Interceptor
 import okhttp3.Request
 import okhttp3.Response
 import okio.Buffer
+import okio.Sink
+import okio.Timeout
+import okio.buffer
 import okio.ByteString.Companion.toByteString
 import java.io.IOException
 import java.util.Collections
-import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicLong
 
 /** OkHttp backend that stores one record per request/response exchange. */
 class APITraceOkHttpBackend(
     private val maxRecords: Int = 500,
     private val redactor: APITraceRedactor = APITraceRedactor.DEFAULT,
     private val maxBodyBytes: Long = 64 * 1024,
-    private val captureRequestBodies: Boolean = true,
-    private val captureResponseBodies: Boolean = true,
+    private val captureRequestBodies: Boolean = false,
+    private val captureResponseBodies: Boolean = false,
     private val allowInNonDebuggableBuilds: Boolean = false,
 ) : APITraceBackend {
-    private val buffer = CopyOnWriteArrayList<APITraceRecord>()
+    private val buffer = mutableListOf<APITraceRecord>()
+    private val bufferLock = Any()
+    private val generation = AtomicLong()
+
+    init {
+        require(maxRecords > 0) { "maxRecords must be greater than zero" }
+        require(maxBodyBytes >= 0) { "maxBodyBytes must not be negative" }
+    }
 
     @Volatile
     private var isEnabled = false
@@ -29,6 +39,7 @@ class APITraceOkHttpBackend(
         if (!isEnabled) {
             return@Interceptor chain.proceed(request)
         }
+        val captureGeneration = generation.get()
 
         val startNs = System.nanoTime()
         val startedAtEpochMs = System.currentTimeMillis()
@@ -47,7 +58,8 @@ class APITraceOkHttpBackend(
                     endpoint = request.url.encodedPath,
                     request = requestCapture,
                     response = buildResponseCapture(response),
-                )
+                ),
+                captureGeneration,
             )
             response
         } catch (ioe: IOException) {
@@ -61,7 +73,8 @@ class APITraceOkHttpBackend(
                     request = requestCapture,
                     response = null,
                     errorMessage = ioe.message?.let(redactor::redactErrorMessage),
-                )
+                ),
+                captureGeneration,
             )
             throw ioe
         }
@@ -74,19 +87,26 @@ class APITraceOkHttpBackend(
             logRefusal()
             return
         }
+        generation.incrementAndGet()
         isEnabled = true
     }
 
     override fun stop() {
         isEnabled = false
+        generation.incrementAndGet()
     }
 
     override fun clear() {
-        buffer.clear()
+        generation.incrementAndGet()
+        synchronized(bufferLock) {
+            buffer.clear()
+        }
     }
 
     override fun records(): List<APITraceRecord> {
-        return Collections.unmodifiableList(buffer.toList())
+        return synchronized(bufferLock) {
+            Collections.unmodifiableList(buffer.toList())
+        }
     }
 
     private fun buildRequestCapture(
@@ -121,14 +141,14 @@ class APITraceOkHttpBackend(
         return elapsedNs / 1_000_000L
     }
 
-    private fun append(record: APITraceRecord) {
-        buffer.add(record)
-        val overflow = buffer.size - maxRecords
-        if (overflow > 0) {
-            repeat(overflow) {
-                if (buffer.isNotEmpty()) {
-                    buffer.removeAt(0)
-                }
+    private fun append(record: APITraceRecord, captureGeneration: Long) {
+        synchronized(bufferLock) {
+            if (!isEnabled || generation.get() != captureGeneration) {
+                return
+            }
+            buffer.add(record)
+            if (buffer.size > maxRecords) {
+                buffer.subList(0, buffer.size - maxRecords).clear()
             }
         }
     }
@@ -139,16 +159,42 @@ class APITraceOkHttpBackend(
             return BodyCapture()
         }
 
-        return runCatching {
-            val sink = Buffer()
-            body.writeTo(sink)
-            val truncated = sink.size > maxBodyBytes
-            decodeBytes(sink.readByteArray(minOf(sink.size, maxBodyBytes)), truncated)
-        }.getOrElse { BodyCapture() }
+        val contentLength = try {
+            body.contentLength()
+        } catch (_: IOException) {
+            return BodyCapture()
+        }
+        if (maxBodyBytes == 0L || contentLength < 0 || contentLength > maxBodyBytes) {
+            return BodyCapture()
+        }
+
+        return try {
+            val prefix = Buffer()
+            var bytesSeen = 0L
+            val boundedSink = object : Sink {
+                override fun write(source: Buffer, byteCount: Long) {
+                    val remaining = (maxBodyBytes - prefix.size).coerceAtLeast(0)
+                    val captured = minOf(remaining, byteCount)
+                    if (captured > 0) prefix.write(source, captured)
+                    source.skip(byteCount - captured)
+                    bytesSeen += byteCount
+                }
+
+                override fun flush() = Unit
+                override fun timeout(): Timeout = Timeout.NONE
+                override fun close() = Unit
+            }.buffer()
+            body.writeTo(boundedSink)
+            boundedSink.flush()
+            decodeBytes(prefix.readByteArray(), truncated = bytesSeen > maxBodyBytes)
+        } catch (_: Exception) {
+            BodyCapture()
+        }
     }
 
     private fun peekResponseBody(response: Response): BodyCapture {
         val body = response.body ?: return BodyCapture()
+        if (maxBodyBytes == 0L || body.contentLength() < 0) return BodyCapture()
 
         // peekBody blocks until maxBodyBytes arrive or the stream ends, which would
         // stall server-sent events and other never-ending responses.
@@ -156,11 +202,13 @@ class APITraceOkHttpBackend(
             return BodyCapture()
         }
 
-        return runCatching {
+        return try {
             val peeked = response.peekBody(maxBodyBytes)
             val bytes = peeked.bytes()
             decodeBytes(bytes, truncated = bytes.size.toLong() >= maxBodyBytes)
-        }.getOrElse { BodyCapture() }
+        } catch (_: Exception) {
+            BodyCapture()
+        }
     }
 
     private fun isEventStream(contentType: String?): Boolean {
@@ -192,10 +240,10 @@ class APITraceOkHttpBackend(
             val application = Class.forName("android.app.ActivityThread")
                 .getMethod("currentApplication")
                 .invoke(null) as? android.content.Context
-                ?: return@runCatching true
+                ?: return@runCatching false
             val flags = application.applicationInfo.flags
             (flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
-        }.getOrDefault(true)
+        }.getOrDefault(false)
     }
 
     private fun logRefusal() {

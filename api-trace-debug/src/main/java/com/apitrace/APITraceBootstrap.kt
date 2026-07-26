@@ -15,8 +15,8 @@ object APITraceBootstrap {
         maxRecords: Int = 500,
         redactor: APITraceRedactor = APITraceRedactor.DEFAULT,
         maxBodyBytes: Long = 64 * 1024,
-        captureRequestBodies: Boolean = true,
-        captureResponseBodies: Boolean = true,
+        captureRequestBodies: Boolean = false,
+        captureResponseBodies: Boolean = false,
         allowInNonDebuggableBuilds: Boolean = false,
     ) {
         val backend = APITraceOkHttpBackend(
