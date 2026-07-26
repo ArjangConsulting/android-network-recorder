@@ -10,17 +10,21 @@ Debug-focused API interception starter modules for Kotlin/Android.
 
 ## Install
 
-Add the modules from this repository into your Android build. You can include them as a Git submodule or vendored source:
+Release artifacts are published to Maven Central under `io.github.arjangconsulting`:
 
 ```kotlin
 dependencies {
-    implementation(project(":api-trace-core"))
-    debugImplementation(project(":api-trace-debug"))
-    releaseImplementation(project(":api-trace-noop"))
+    implementation("io.github.arjangconsulting:api-trace-core:<version>")
+    debugImplementation("io.github.arjangconsulting:api-trace-debug:<version>")
+    releaseImplementation("io.github.arjangconsulting:api-trace-noop:<version>")
 }
 ```
 
 This keeps app code identical across build types.
+
+Publishing is triggered by pushing a bare SemVer tag such as `2.0.0`. The repository must
+define `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_PASSWORD`, `MAVEN_SIGNING_KEY`, and
+`MAVEN_SIGNING_PASSWORD` Actions secrets before the first release.
 
 ## Integrate In App Startup
 
