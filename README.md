@@ -114,9 +114,10 @@ ISO 8601 `startedAt` with millisecond precision to match the iOS SDK's wire form
 - Request headers are opt-in via `headerRules`.
 - `EXACT` preserves the original value.
 - `INCLUDES` stores only presence semantics using the configured replacement value.
-- Response headers are captured by default, except credential-bearing headers
-  (`Set-Cookie`, `Set-Cookie2`, `Authorization`, `Proxy-Authenticate`, `WWW-Authenticate`),
-  which are replaced with the replacement value. Override via `responseHeaderRules`
+- Response headers are captured by default, except credential-bearing and redirect headers
+  (`Set-Cookie`, `Set-Cookie2`, `Authorization`, `Proxy-Authenticate`, `WWW-Authenticate`,
+  `Location`, `Content-Location`, `Refresh`), which are replaced with the replacement value.
+  Custom `responseHeaderRules` extend these defaults. Override a default with `EXACT`
   (`EXACT` opts a default back in; `INCLUDES` redacts additional headers).
 - OkHttp's `toMultimap()` lowercases stored header names; rule matching is
   case-insensitive either way.
@@ -134,6 +135,8 @@ APITraceBootstrap.install(
     okHttpBuilder = okHttpBuilder,
     maxRecords = 500,
     maxBodyBytes = 64 * 1024,
+    captureRequestBodies = true,
+    captureResponseBodies = true,
     redactor = APITraceRedactor(
         headerRules = mapOf(
             "Authorization" to APITraceCaptureMode.INCLUDES,
@@ -152,13 +155,12 @@ APITraceBootstrap.install(
 - Debug module installs an **application** interceptor, so captured response bodies are
   observed after OkHttp's transparent gzip decoding. Redirects are followed inside OkHttp,
   so one record covers the whole call and reflects the final response.
-- Response body capture uses `peekBody` with a size cap (`maxBodyBytes`, default 64 KB) to
-  avoid consuming the stream. Request bodies are capped at the same limit. Body capture is
-  skipped for `text/event-stream` responses and protocol upgrades (101), which would
-  otherwise stall streaming.
-- Bodies are stored verbatim — there is no field-level body redaction. Disable capture with
-  `captureRequestBodies = false` / `captureResponseBodies = false` for endpoints that
-  exchange credentials if that is a concern.
+- Body capture is disabled by default because bodies are stored verbatim with no field-level
+  redaction. Explicitly enable it only for endpoints whose payloads are safe to retain.
+- Enabled response body capture uses `peekBody` with a size cap (`maxBodyBytes`, default 64 KB)
+  and skips unknown-length streams, `text/event-stream`, and protocol upgrades. Request bodies
+  are captured only when repeatable and no larger than the limit, avoiding unbounded buffering.
+- Stored URLs always omit user credentials and fragments. Query items remain opt-in.
 - `start()` refuses to enable capture when the host app is not debuggable, as defense in
   depth against the debug module accidentally shipping in a release build. Internal
   non-debuggable QA builds can opt in with `allowInNonDebuggableBuilds = true`.

@@ -1,5 +1,6 @@
 package com.apitrace
 
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -37,11 +38,13 @@ class APITraceRedactorTest {
             mapOf(
                 "set-cookie" to listOf("session=abc123"),
                 "x-internal-token" to listOf("secret"),
+                "www-authenticate" to listOf("Bearer secret"),
             )
         )
 
         assertEquals(listOf("session=abc123"), headers["set-cookie"])
         assertEquals(listOf("<mocked>"), headers["x-internal-token"])
+        assertEquals(listOf("<mocked>"), headers["www-authenticate"])
     }
 
     @Test
@@ -56,5 +59,15 @@ class APITraceRedactorTest {
             "The request timed out. Retry? Yes/no",
             redactor.redactErrorMessage("The request timed out. Retry? Yes/no"),
         )
+    }
+
+    @Test
+    fun `url credentials and fragments are always removed`() {
+        val redactor = APITraceRedactor(queryItemRules = mapOf("page" to APITraceCaptureMode.EXACT))
+        val url = "https://user:password@api.example.com/v1/users?page=1#access-token".toHttpUrl()
+
+        val redacted = redactor.redact(url)
+
+        assertEquals("https://api.example.com/v1/users?page=1", redacted.url)
     }
 }

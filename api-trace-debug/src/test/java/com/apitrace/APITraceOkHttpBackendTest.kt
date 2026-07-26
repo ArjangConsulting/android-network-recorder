@@ -43,7 +43,7 @@ class APITraceOkHttpBackendTest {
     @Test
     fun `capture is disabled by default until start is called`() {
         server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
-        val backend = APITraceOkHttpBackend()
+        val backend = APITraceOkHttpBackend(allowInNonDebuggableBuilds = true)
         val client = clientFor(backend)
 
         executeRequest(client)
@@ -54,7 +54,7 @@ class APITraceOkHttpBackendTest {
     @Test
     fun `capture records requests after start is called`() {
         server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
-        val backend = APITraceOkHttpBackend()
+        val backend = APITraceOkHttpBackend(allowInNonDebuggableBuilds = true)
         val client = clientFor(backend)
 
         backend.start()
@@ -67,7 +67,7 @@ class APITraceOkHttpBackendTest {
     fun `capture stops recording after stop is called`() {
         server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
         server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
-        val backend = APITraceOkHttpBackend()
+        val backend = APITraceOkHttpBackend(allowInNonDebuggableBuilds = true)
         val client = clientFor(backend)
 
         backend.start()
@@ -86,7 +86,7 @@ class APITraceOkHttpBackendTest {
     fun `capture resumes if start is called again after stop`() {
         server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
         server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
-        val backend = APITraceOkHttpBackend()
+        val backend = APITraceOkHttpBackend(allowInNonDebuggableBuilds = true)
         val client = clientFor(backend)
 
         backend.start()
@@ -102,7 +102,11 @@ class APITraceOkHttpBackendTest {
     fun `response body capture is truncated to maxBodyBytes`() {
         val longBody = "x".repeat(200)
         server.enqueue(MockResponse().setResponseCode(200).setBody(longBody))
-        val backend = APITraceOkHttpBackend(maxBodyBytes = 10)
+        val backend = APITraceOkHttpBackend(
+            maxBodyBytes = 10,
+            captureResponseBodies = true,
+            allowInNonDebuggableBuilds = true,
+        )
         val client = clientFor(backend)
 
         backend.start()
@@ -119,7 +123,10 @@ class APITraceOkHttpBackendTest {
     @Test
     fun `request bodies are captured`() {
         server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
-        val backend = APITraceOkHttpBackend()
+        val backend = APITraceOkHttpBackend(
+            captureRequestBodies = true,
+            allowInNonDebuggableBuilds = true,
+        )
         val client = clientFor(backend)
 
         backend.start()
@@ -135,9 +142,13 @@ class APITraceOkHttpBackendTest {
     }
 
     @Test
-    fun `request body capture is truncated to maxBodyBytes`() {
+    fun `request bodies larger than maxBodyBytes are skipped`() {
         server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
-        val backend = APITraceOkHttpBackend(maxBodyBytes = 10)
+        val backend = APITraceOkHttpBackend(
+            maxBodyBytes = 10,
+            captureRequestBodies = true,
+            allowInNonDebuggableBuilds = true,
+        )
         val client = clientFor(backend)
 
         backend.start()
@@ -148,14 +159,17 @@ class APITraceOkHttpBackendTest {
         client.newCall(request).execute().close()
 
         val record = backend.records().single()
-        val capturedText = requireNotNull(record.request.bodyText)
-        assertTrue(capturedText.toByteArray(Charsets.UTF_8).size <= 10)
+        assertNull(record.request.bodyText)
     }
 
     @Test
     fun `body capture can be disabled while metadata is still recorded`() {
         server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
-        val backend = APITraceOkHttpBackend(captureRequestBodies = false, captureResponseBodies = false)
+        val backend = APITraceOkHttpBackend(
+            captureRequestBodies = false,
+            captureResponseBodies = false,
+            allowInNonDebuggableBuilds = true,
+        )
         val client = clientFor(backend)
 
         backend.start()
@@ -182,7 +196,7 @@ class APITraceOkHttpBackendTest {
                 .addHeader("X-Request-Id", "req-7")
                 .setBody("ok")
         )
-        val backend = APITraceOkHttpBackend()
+        val backend = APITraceOkHttpBackend(allowInNonDebuggableBuilds = true)
         val client = clientFor(backend)
 
         backend.start()
@@ -194,7 +208,7 @@ class APITraceOkHttpBackendTest {
     }
 
     @Test
-    fun `gzip response bodies are captured decoded`() {
+    fun `unknown length gzip response bodies are skipped to avoid blocking`() {
         val payload = """{"ok":true}"""
         val gzipped = Buffer()
         GzipSink(gzipped).buffer().use { it.writeUtf8(payload) }
@@ -204,18 +218,17 @@ class APITraceOkHttpBackendTest {
                 .addHeader("Content-Encoding", "gzip")
                 .setBody(gzipped)
         )
-        val backend = APITraceOkHttpBackend()
+        val backend = APITraceOkHttpBackend(
+            captureResponseBodies = true,
+            allowInNonDebuggableBuilds = true,
+        )
         val client = clientFor(backend)
 
         backend.start()
         executeRequest(client)
 
         val record = backend.records().single()
-        assertEquals(
-            "Application-level capture must observe the transparently gunzipped body",
-            payload,
-            record.response?.bodyText,
-        )
+        assertNull(record.response?.bodyText)
     }
 
     @Test
@@ -223,7 +236,10 @@ class APITraceOkHttpBackendTest {
         val bytes = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte())
         val body = Buffer().write(bytes)
         server.enqueue(MockResponse().setResponseCode(200).setBody(body))
-        val backend = APITraceOkHttpBackend()
+        val backend = APITraceOkHttpBackend(
+            captureResponseBodies = true,
+            allowInNonDebuggableBuilds = true,
+        )
         val client = clientFor(backend)
 
         backend.start()
@@ -237,7 +253,7 @@ class APITraceOkHttpBackendTest {
     @Test
     fun `clear removes all captured records`() {
         server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
-        val backend = APITraceOkHttpBackend()
+        val backend = APITraceOkHttpBackend(allowInNonDebuggableBuilds = true)
         val client = clientFor(backend)
 
         backend.start()

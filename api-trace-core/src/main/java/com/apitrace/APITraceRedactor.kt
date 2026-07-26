@@ -6,14 +6,14 @@ import okhttp3.HttpUrl
 class APITraceRedactor(
     headerRules: Map<String, APITraceCaptureMode> = emptyMap(),
     private val queryItemRules: Map<String, APITraceCaptureMode> = emptyMap(),
-    responseHeaderRules: Map<String, APITraceCaptureMode> = DEFAULT_RESPONSE_HEADER_RULES,
+    responseHeaderRules: Map<String, APITraceCaptureMode> = emptyMap(),
     private val replacement: String = "<mocked>",
 ) {
     private val normalizedHeaderRules: Map<String, APITraceCaptureMode> =
         headerRules.mapKeys { entry -> entry.key.lowercase() }
 
     private val normalizedResponseHeaderRules: Map<String, APITraceCaptureMode> =
-        responseHeaderRules.mapKeys { entry -> entry.key.lowercase() }
+        (DEFAULT_RESPONSE_HEADER_RULES + responseHeaderRules).mapKeys { entry -> entry.key.lowercase() }
 
     fun redact(headers: Map<String, List<String>>): Map<String, APITraceCapturedField> {
         if (headers.isEmpty()) {
@@ -32,12 +32,12 @@ class APITraceRedactor(
     }
 
     fun redact(url: HttpUrl): APITraceRedactedUrl {
-        if (url.querySize == 0) {
-            return APITraceRedactedUrl(url = url.newBuilder().query(null).build().toString(), queryItems = emptyMap())
-        }
-
         val captured = linkedMapOf<String, APITraceCapturedField>()
-        val sanitizedUrl = url.newBuilder().query(null)
+        val sanitizedUrl = url.newBuilder()
+            .username("")
+            .password("")
+            .fragment(null)
+            .query(null)
 
         for (index in 0 until url.querySize) {
             val name = url.queryParameterName(index)
@@ -107,7 +107,10 @@ class APITraceRedactor(
             "Set-Cookie" to APITraceCaptureMode.INCLUDES,
             "Set-Cookie2" to APITraceCaptureMode.INCLUDES,
             "Authorization" to APITraceCaptureMode.INCLUDES,
+            "Content-Location" to APITraceCaptureMode.INCLUDES,
+            "Location" to APITraceCaptureMode.INCLUDES,
             "Proxy-Authenticate" to APITraceCaptureMode.INCLUDES,
+            "Refresh" to APITraceCaptureMode.INCLUDES,
             "WWW-Authenticate" to APITraceCaptureMode.INCLUDES,
         )
 
