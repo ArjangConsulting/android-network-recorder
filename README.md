@@ -28,6 +28,8 @@ define `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_PASSWORD`, `MAVEN_SIGNING_KEY`, 
 
 Release Please uses the built-in `GITHUB_TOKEN`. The organization allows Actions to create
 pull requests, while the workflow grants only the write permissions needed for releases.
+Automatic releases stay within the current major version and increment the minor version.
+An intentional major release requires an explicit `Release-As: X.0.0` commit footer.
 
 ## Integrate In App Startup
 
