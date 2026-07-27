@@ -7,6 +7,25 @@ import org.junit.Test
 class APITraceRedactorTest {
 
     @Test
+    fun `request headers are all captured while configured rules redact values`() {
+        val redactor = APITraceRedactor(
+            headerRules = mapOf("Authorization" to APITraceCaptureMode.INCLUDES),
+        )
+
+        val headers = redactor.redact(
+            mapOf(
+                "Accept" to listOf("application/json"),
+                "Authorization" to listOf("Bearer secret"),
+                "X-Request-Id" to listOf("request-42"),
+            ),
+        )
+
+        assertEquals(listOf("application/json"), headers["Accept"]?.values)
+        assertEquals(listOf("<mocked>"), headers["Authorization"]?.values)
+        assertEquals(listOf("request-42"), headers["X-Request-Id"]?.values)
+    }
+
+    @Test
     fun `response headers are captured by default with sensitive defaults redacted`() {
         val redactor = APITraceRedactor.DEFAULT
 

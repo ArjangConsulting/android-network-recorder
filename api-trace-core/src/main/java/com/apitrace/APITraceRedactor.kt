@@ -22,7 +22,9 @@ class APITraceRedactor(
 
         val captured = linkedMapOf<String, APITraceCapturedField>()
         headers.forEach { (name, values) ->
-            val mode = normalizedHeaderRules[name.lowercase()] ?: return@forEach
+            // Rules control sanitization, not field presence. Keeping every header preserves
+            // complete HAR metadata while configured rules still redact sensitive values.
+            val mode = normalizedHeaderRules[name.lowercase()] ?: APITraceCaptureMode.EXACT
             captured[name] = APITraceCapturedField(
                 mode = mode,
                 values = values.map { sanitizeValue(mode, it) },
