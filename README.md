@@ -62,10 +62,29 @@ class App : Application() {
 - `APITrace.records()`
 - `APITrace.exportJson(pretty)`
 - `APITrace.exportHar(pretty)`
+- `APITraceConsoleFormatter(maxBodyCharacters).format(record)`
 - `APITraceRedactor(headerRules, queryItemRules, responseHeaderRules, replacement)`
 - `APITraceBootstrap.install(okHttpBuilder, maxRecords, redactor, maxBodyBytes, captureRequestBodies, captureResponseBodies, allowInNonDebuggableBuilds)` (from debug/noop module)
 
 All public symbols are documented with KDoc in `api-trace-core` and public bootstrap classes.
+
+## Readable Console Output
+
+`APITraceConsoleFormatter` turns an already-sanitized record into an indented request and
+response/failure block. It returns a string so the host app can use its preferred logger:
+
+```kotlin
+val formatter = APITraceConsoleFormatter(maxBodyCharacters = 10_000)
+
+APITrace.records().forEach { record ->
+    Timber.tag("API").d(formatter.format(record))
+}
+```
+
+The formatter never accepts raw OkHttp requests or responses. It formats the stored
+`APITraceRecord`, so URLs and headers have already passed through the configured redaction policy.
+Text bodies are truncated to `maxBodyCharacters`; binary bodies are described without printing
+their base64 data.
 
 ## Stored Data Format
 
