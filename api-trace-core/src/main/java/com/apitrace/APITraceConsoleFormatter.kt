@@ -1,5 +1,8 @@
 package com.apitrace
 
+import org.json.JSONArray
+import org.json.JSONObject
+
 /**
  * Formats sanitized trace records for readable multiline console output.
  *
@@ -40,12 +43,12 @@ class APITraceConsoleFormatter(
     private fun section(
         heading: String,
         headers: Map<String, List<String>>,
-        body: String,
+        body: String?,
     ): String =
         buildString {
             appendLine(heading)
-            appendSection("Headers", formattedHeaders(headers))
-            appendSection("Body", body, terminate = false)
+            appendSection("Headers", formattedHeaders(headers), terminate = body != null)
+            body?.let { appendSection("Body", it, terminate = false) }
         }
 
     private fun formattedHeaders(headers: Map<String, List<String>>): String =
@@ -58,14 +61,75 @@ class APITraceConsoleFormatter(
     private fun bodyText(
         text: String?,
         base64: String?,
-    ): String {
-        if (text == null) {
-            return base64?.let { "<binary body: base64, ${it.length} characters>" } ?: "<empty>"
+    ): String? {
+        if (text != null) {
+            if (text.isBlank()) return null
+            val formatted = prettyPrintedJson(text) ?: text
+            if (formatted.length <= maxBodyCharacters) return formatted
+            return formatted.take(maxBodyCharacters) + "…[truncated]"
         }
-        if (text.isEmpty()) return "<empty>"
-        if (text.length <= maxBodyCharacters) return text
-        return text.take(maxBodyCharacters) + "…[truncated]"
+
+        return base64
+            ?.takeIf(String::isNotEmpty)
+            ?.let { "<binary body: base64, ${it.length} characters>" }
     }
+
+    private fun prettyPrintedJson(text: String): String? {
+        val trimmed = text.trim()
+        return runCatching {
+            val value =
+                when (trimmed.firstOrNull()) {
+                    '{' -> JSONObject(trimmed)
+                    '[' -> JSONArray(trimmed)
+                    else -> return null
+                }
+            formattedJsonValue(value, indentation = 0)
+        }.getOrNull()
+    }
+
+    private fun formattedJsonValue(
+        value: Any,
+        indentation: Int,
+    ): String =
+        when (value) {
+            is JSONObject -> {
+                val keys = value.keys().asSequence().toList().sorted()
+                if (keys.isEmpty()) {
+                    "{}"
+                } else {
+                    val childIndentation = indentation + 2
+                    keys.joinToString(
+                        prefix = "{\n",
+                        postfix = "\n${" ".repeat(indentation)}}",
+                        separator = ",\n",
+                    ) { key ->
+                        "${" ".repeat(childIndentation)}${JSONObject.quote(key)}: ${
+                            formattedJsonValue(value.get(key), childIndentation)
+                        }"
+                    }
+                }
+            }
+            is JSONArray -> {
+                if (value.length() == 0) {
+                    "[]"
+                } else {
+                    val childIndentation = indentation + 2
+                    (0 until value.length()).joinToString(
+                        prefix = "[\n",
+                        postfix = "\n${" ".repeat(indentation)}]",
+                        separator = ",\n",
+                    ) { index ->
+                        "${" ".repeat(childIndentation)}${
+                            formattedJsonValue(value.get(index), childIndentation)
+                        }"
+                    }
+                }
+            }
+            is String -> JSONObject.quote(value)
+            JSONObject.NULL -> "null"
+            is Number, is Boolean -> value.toString()
+            else -> JSONObject.quote(value.toString())
+        }
 
     private fun StringBuilder.appendSection(
         label: String,
