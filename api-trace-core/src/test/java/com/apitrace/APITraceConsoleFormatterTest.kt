@@ -1,6 +1,7 @@
 package com.apitrace
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -61,7 +62,7 @@ class APITraceConsoleFormatterTest {
     }
 
     @Test
-    fun `formats failure and empty request sections`() {
+    fun `formats failure and omits empty request body`() {
         val record =
             APITraceRecord(
                 durationMs = 8,
@@ -77,8 +78,6 @@ class APITraceConsoleFormatterTest {
             → REQUEST GET https://api.example.com/videos
               Headers:
                 <none>
-              Body:
-                <empty>
             ✗ FAILURE (8ms)
               Error:
                 Connection refused
@@ -103,5 +102,86 @@ class APITraceConsoleFormatterTest {
 
         assertTrue(output.contains("abc…[truncated]"))
         assertTrue(output.contains("<binary body: base64, 4 characters>"))
+    }
+
+    @Test
+    fun `pretty prints compact JSON object and array bodies`() {
+        val record =
+            APITraceRecord(
+                durationMs = 1,
+                method = "POST",
+                url = "https://api.example.com/items",
+                endpoint = "/items",
+                request =
+                    APITraceRecord.RequestData(bodyText = """{"request":{"value":true}}"""),
+                response =
+                    APITraceRecord.ResponseData(
+                        statusCode = 200,
+                        bodyText = """[{"id":1},{"id":2}]""",
+                    ),
+            )
+
+        val output = APITraceConsoleFormatter().format(record)
+
+        assertFalse(output.contains("""{"request":{"value":true}}"""))
+        assertFalse(output.contains("""[{"id":1},{"id":2}]"""))
+        assertTrue(output.contains("\n      \"request\": {"))
+        assertTrue(output.contains("\n        \"value\": true"))
+        assertTrue(output.contains("\n      {"))
+    }
+
+    @Test
+    fun `omits empty whitespace and empty binary bodies`() {
+        val record =
+            APITraceRecord(
+                durationMs = 1,
+                method = "POST",
+                url = "https://api.example.com/items",
+                endpoint = "/items",
+                request = APITraceRecord.RequestData(bodyText = " \n\t "),
+                response = APITraceRecord.ResponseData(statusCode = 204, bodyBase64 = ""),
+            )
+
+        val output = APITraceConsoleFormatter().format(record)
+
+        assertFalse(output.contains("Body:"))
+        assertFalse(output.contains("<empty>"))
+    }
+
+    @Test
+    fun `preserves plain and malformed text bodies`() {
+        val record =
+            APITraceRecord(
+                durationMs = 1,
+                method = "POST",
+                url = "https://api.example.com/items",
+                endpoint = "/items",
+                request = APITraceRecord.RequestData(bodyText = "plain text"),
+                response =
+                    APITraceRecord.ResponseData(statusCode = 400, bodyText = "{not json}"),
+            )
+
+        val output = APITraceConsoleFormatter().format(record)
+
+        assertTrue(output.contains("\n    plain text"))
+        assertTrue(output.contains("\n    {not json}"))
+    }
+
+    @Test
+    fun `truncates after pretty printing JSON`() {
+        val record =
+            APITraceRecord(
+                durationMs = 1,
+                method = "POST",
+                url = "https://api.example.com/items",
+                endpoint = "/items",
+                request =
+                    APITraceRecord.RequestData(bodyText = """{"longValue":"abcdefghijk"}"""),
+            )
+
+        val output = APITraceConsoleFormatter(maxBodyCharacters = 12).format(record)
+
+        assertTrue(output.contains("…[truncated]"))
+        assertFalse(output.contains("""{"longValue""""))
     }
 }

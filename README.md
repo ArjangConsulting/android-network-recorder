@@ -83,8 +83,9 @@ APITrace.records().forEach { record ->
 
 The formatter never accepts raw OkHttp requests or responses. It formats the stored
 `APITraceRecord`, so URLs and headers have already passed through the configured redaction policy.
-Text bodies are truncated to `maxBodyCharacters`; binary bodies are described without printing
-their base64 data.
+Text bodies containing a JSON object or array are pretty-printed, then truncated to
+`maxBodyCharacters`. Empty and whitespace-only bodies are omitted. Binary bodies are described
+without printing their base64 data.
 
 ## Stored Data Format
 
