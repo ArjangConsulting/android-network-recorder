@@ -139,7 +139,6 @@ object APITrace {
             }
             else -> {
                 content.put("size", 0)
-                content.put("text", JSONObject.NULL)
             }
         }
         content.put("mimeType", mimeType)
@@ -174,7 +173,6 @@ object APITrace {
         val content = JSONObject()
         content.put("size", 0)
         content.put("mimeType", "")
-        content.put("text", JSONObject.NULL)
         obj.put("content", content)
         obj.put("redirectURL", "")
         obj.put("headersSize", -1)
