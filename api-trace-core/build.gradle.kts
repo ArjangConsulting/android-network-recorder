@@ -4,7 +4,6 @@ import org.gradle.jvm.tasks.Jar
 
 plugins {
     id("com.android.library")
-    id("org.jetbrains.kotlin.android")
     id("com.vanniktech.maven.publish")
 }
 
@@ -30,7 +29,7 @@ afterEvaluate {
 
 android {
     namespace = "com.apitrace.core"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         minSdk = 24
@@ -40,10 +39,6 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = "17"
     }
 }
 
