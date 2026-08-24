@@ -44,5 +44,5 @@ android {
 
 dependencies {
     implementation(project(":api-trace-core"))
-    implementation("com.squareup.okhttp3:okhttp:5.4.0")
+    implementation("com.squareup.okhttp3:okhttp:5.5.0")
 }
