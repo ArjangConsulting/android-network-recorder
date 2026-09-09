@@ -29,7 +29,7 @@ afterEvaluate {
 
 android {
     namespace = "com.apitrace.core"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         minSdk = 24
@@ -43,7 +43,7 @@ android {
 }
 
 dependencies {
-    implementation("com.squareup.okhttp3:okhttp:5.4.0")
+    implementation("com.squareup.okhttp3:okhttp:5.5.0")
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.json:json:20260719")
+    testImplementation("org.json:json:20260814")
 }
