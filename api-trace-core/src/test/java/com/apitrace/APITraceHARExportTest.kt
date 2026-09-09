@@ -197,6 +197,41 @@ class APITraceHARExportTest {
     }
 
     @Test
+    fun failedRequestContentOmitsTextRatherThanEncodingJsonNull() {
+        // HAR 1.2 requires content.text to be a string when present; a JSON `null` fails
+        // strict schema validation (e.g. Charles refuses to import the whole file).
+        val failed = APITraceRecord(
+            id = "failed-id",
+            startedAtEpochMs = 1_741_143_000_000L,
+            durationMs = 200,
+            method = "POST",
+            url = "https://api.example.com/v1/items",
+            endpoint = "/v1/items",
+            request = APITraceRecord.RequestData(emptyMap(), emptyMap(), null, null),
+            response = null,
+            errorMessage = "Network error"
+        )
+        val entry = har(listOf(failed)).getJSONObject("log").getJSONArray("entries").getJSONObject(0)
+        val content = entry.getJSONObject("response").getJSONObject("content")
+        assertFalse(content.has("text"))
+    }
+
+    @Test
+    fun bodylessResponseContentOmitsTextRatherThanEncodingJsonNull() {
+        val bodyless = record.copy(
+            response = APITraceRecord.ResponseData(
+                statusCode = 204,
+                headers = emptyMap(),
+                bodyText = null,
+                bodyBase64 = null
+            )
+        )
+        val entry = har(listOf(bodyless)).getJSONObject("log").getJSONArray("entries").getJSONObject(0)
+        val content = entry.getJSONObject("response").getJSONObject("content")
+        assertFalse(content.has("text"))
+    }
+
+    @Test
     fun emptyRecordsProduceEmptyEntriesArray() {
         val entries = har(emptyList()).getJSONObject("log").getJSONArray("entries")
         assertEquals(0, entries.length())
