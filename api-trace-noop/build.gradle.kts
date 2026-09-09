@@ -29,7 +29,7 @@ afterEvaluate {
 
 android {
     namespace = "com.apitrace.noop"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         minSdk = 24
