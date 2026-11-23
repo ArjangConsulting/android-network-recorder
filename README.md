@@ -53,6 +53,21 @@ class App : Application() {
 }
 ```
 
+## Write a HAR File For Test Harnesses
+
+UI test harnesses can collect a run's traffic without app-specific export code. Call
+`APITraceHarFile.enableFromLaunchIntent(application)` in `Application.onCreate` next to
+`APITraceBootstrap.install`. When the first activity is launched with the `APITRACE_HAR_FILE`
+extra set to `1` (for example `--es APITRACE_HAR_FILE 1`), the captured history is written to
+`APITraceHarFile.defaultFile(context)` (`apitrace.har` in the app's external cache directory)
+after every recorded exchange. `APITrace.clear()` rewrites it empty.
+
+- Copy it with `adb pull /sdcard/Android/data/<package>/cache/apitrace.har`; no root or
+  debuggable flag is needed. Other apps can't read it and backups skip it.
+- `APITraceHarFile.enable(file)` writes to any file directly; `enable(null)` stops.
+- Writes are coalesced and best effort; a failed write never affects the app's own requests.
+- `api-trace-noop` has the same `APITraceHarFile` API and never writes a file.
+
 ## Public API Surface
 
 - `APITrace.install(backend)`
@@ -62,6 +77,8 @@ class App : Application() {
 - `APITrace.records()`
 - `APITrace.exportJson(pretty)`
 - `APITrace.exportHar(pretty)`
+- `APITrace.exportHar(records, pretty)` (export a given list of records)
+- `APITraceHarFile.enable(file)`, `APITraceHarFile.enableFromLaunchIntent(application)`, `APITraceHarFile.defaultFile(context)`
 - `APITraceConsoleFormatter(maxBodyCharacters).format(record)`
 - `APITraceRedactor(headerRules, queryItemRules, responseHeaderRules, replacement)`
 - `APITraceBootstrap.install(okHttpBuilder, maxRecords, redactor, maxBodyBytes, captureRequestBodies, captureResponseBodies, allowInNonDebuggableBuilds)` (from debug/noop module)

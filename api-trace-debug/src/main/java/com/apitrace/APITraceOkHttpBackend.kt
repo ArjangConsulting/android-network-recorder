@@ -101,6 +101,7 @@ class APITraceOkHttpBackend(
         synchronized(bufferLock) {
             buffer.clear()
         }
+        APITraceHarFile.recordsChanged()
     }
 
     override fun records(): List<APITraceRecord> {
@@ -151,6 +152,7 @@ class APITraceOkHttpBackend(
                 buffer.subList(0, buffer.size - maxRecords).clear()
             }
         }
+        APITraceHarFile.recordsChanged()
     }
 
     private fun extractRequestBody(request: Request): BodyCapture {

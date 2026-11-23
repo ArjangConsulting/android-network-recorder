@@ -60,6 +60,9 @@ object APITrace {
     /** Exports captured exchanges as a HAR 1.2 archive. */
     fun exportHar(pretty: Boolean = true): String = harString(records(), pretty)
 
+    /** Exports the given exchanges as a HAR 1.2 archive, independent of the installed backend. */
+    fun exportHar(records: List<APITraceRecord>, pretty: Boolean = true): String = harString(records, pretty)
+
     internal fun harString(records: List<APITraceRecord>, pretty: Boolean = true): String {
         val entries = JSONArray()
         records.forEach { record ->
