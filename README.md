@@ -65,7 +65,8 @@ after every recorded exchange. `APITrace.clear()` rewrites it empty.
 - Copy it with `adb pull /sdcard/Android/data/<package>/cache/apitrace.har`; no root or
   debuggable flag is needed. Other apps can't read it and backups skip it.
 - `APITraceHarFile.enable(file)` writes to any file directly; `enable(null)` stops.
-- Writes are coalesced and best effort; a failed write never affects the app's own requests.
+- Writes are coalesced and best effort; a failed write is logged (tag `APITrace`) and never affects
+  the app's own requests.
 - `api-trace-noop` has the same `APITraceHarFile` API and never writes a file.
 
 ## Public API Surface

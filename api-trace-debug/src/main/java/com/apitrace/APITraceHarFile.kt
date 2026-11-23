@@ -113,11 +113,22 @@ internal class HarFileWriter(private val file: File, private val har: () -> Stri
             val directory = file.absoluteFile.parentFile
             directory?.mkdirs()
             val temporary = File(directory, "${file.name}.tmp")
-            temporary.writeText(har())
+            val content = har()
+            temporary.writeText(content)
             if (!temporary.renameTo(file)) {
                 file.delete()
-                temporary.renameTo(file)
+                check(temporary.renameTo(file)) { "could not move ${temporary.name} into place" }
             }
+            content.length
+        }.onSuccess { characters ->
+            log(android.util.Log.DEBUG, "Wrote $characters characters to ${file.name}")
+        }.onFailure { error ->
+            // Export is best effort: a failed write is logged and never affects the app's own traffic.
+            log(android.util.Log.WARN, "Failed to write ${file.name}: ${error.javaClass.simpleName}: ${error.message}")
         }
+    }
+
+    private fun log(priority: Int, message: String) {
+        runCatching { android.util.Log.println(priority, "APITrace", message) }
     }
 }
