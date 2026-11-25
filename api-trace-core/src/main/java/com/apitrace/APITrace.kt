@@ -102,7 +102,7 @@ object APITrace {
         obj.put("httpVersion", "HTTP/1.1")
         obj.put("headers", capturedFieldsToHarArray(record.request.headers))
         obj.put("queryString", capturedFieldsToHarArray(record.request.queryItems))
-        obj.put("cookies", JSONArray())
+        obj.put("cookies", cookiesToHarArray(record.request.cookieNames))
         obj.put("headersSize", -1)
         obj.put("bodySize", -1)
         val bodyText = record.request.bodyText
@@ -124,7 +124,7 @@ object APITrace {
         obj.put("statusText", "")
         obj.put("httpVersion", "HTTP/1.1")
         obj.put("headers", headersToHarArray(response.headers))
-        obj.put("cookies", JSONArray())
+        obj.put("cookies", cookiesToHarArray(response.cookieNames))
         val mimeType = harMimeType(firstHeaderValue("Content-Type", response.headers))
         val content = JSONObject()
         val bodyText = response.bodyText
@@ -194,6 +194,12 @@ object APITrace {
             }
         }
         return array
+    }
+
+    private fun cookiesToHarArray(names: List<String>): JSONArray = JSONArray().apply {
+        names.forEach { name ->
+            put(JSONObject().put("name", name).put("value", APITraceCredentialNames.MARKER))
+        }
     }
 
     private fun capturedFieldsToHarArray(fields: Map<String, APITraceCapturedField>): JSONArray {

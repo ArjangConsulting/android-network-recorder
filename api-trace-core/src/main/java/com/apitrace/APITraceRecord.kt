@@ -32,6 +32,7 @@ data class APITraceRecord(
         val queryItems: Map<String, APITraceCapturedField> = emptyMap(),
         val bodyText: String? = null,
         val bodyBase64: String? = null,
+        val cookieNames: List<String> = emptyList(),
     )
 
     /** Response envelope captured after dispatch succeeds. */
@@ -40,5 +41,6 @@ data class APITraceRecord(
         val headers: Map<String, List<String>> = emptyMap(),
         val bodyText: String? = null,
         val bodyBase64: String? = null,
+        val cookieNames: List<String> = emptyList(),
     )
 }

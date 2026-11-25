@@ -1,125 +1,223 @@
 package com.apitrace
 
 import okhttp3.HttpUrl
+import org.json.JSONArray
+import org.json.JSONException
+import org.json.JSONObject
+import org.json.JSONTokener
+import java.net.URI
+import java.net.URISyntaxException
+import java.net.URLDecoder
+import java.net.URLEncoder
 
-/** Sanitizes request metadata before it is persisted in trace history. */
+/** Sanitizes network data before it enters trace history. */
 class APITraceRedactor(
     headerRules: Map<String, APITraceCaptureMode> = emptyMap(),
-    private val queryItemRules: Map<String, APITraceCaptureMode> = emptyMap(),
+    queryItemRules: Map<String, APITraceCaptureMode> = emptyMap(),
     responseHeaderRules: Map<String, APITraceCaptureMode> = emptyMap(),
-    private val replacement: String = "<mocked>",
+    @Suppress("UNUSED_PARAMETER") replacement: String = "[redacted]",
+    redact: APITraceRedactionConfiguration = APITraceRedactionConfiguration(),
 ) {
-    private val normalizedHeaderRules: Map<String, APITraceCaptureMode> =
-        headerRules.mapKeys { entry -> entry.key.lowercase() }
+    private val credentials = APITraceCredentialPolicy(redact)
+    private val normalizedHeaderRules = normalizeRules(headerRules)
+    private val normalizedResponseRules = normalizeRules(responseHeaderRules)
+    private val normalizedQueryRules = normalizeRules(queryItemRules)
 
-    private val normalizedResponseHeaderRules: Map<String, APITraceCaptureMode> =
-        (DEFAULT_RESPONSE_HEADER_RULES + responseHeaderRules).mapKeys { entry -> entry.key.lowercase() }
-
-    fun redact(headers: Map<String, List<String>>): Map<String, APITraceCapturedField> {
-        if (headers.isEmpty()) {
-            return emptyMap()
+    fun redact(headers: Map<String, List<String>>): Map<String, APITraceCapturedField> =
+        headers.mapValues { (name, values) ->
+            val rule = headerRule(name, normalizedHeaderRules)
+            APITraceCapturedField(rule.mode, values.map { sanitizeHeader(it, name, rule) })
         }
 
-        val captured = linkedMapOf<String, APITraceCapturedField>()
-        headers.forEach { (name, values) ->
-            // Rules control sanitization, not field presence. Keeping every header preserves
-            // complete HAR metadata while configured rules still redact sensitive values.
-            val mode = normalizedHeaderRules[name.lowercase()] ?: APITraceCaptureMode.EXACT
-            captured[name] = APITraceCapturedField(
-                mode = mode,
-                values = values.map { sanitizeValue(mode, it) },
-            )
+    fun redactResponseHeaders(headers: Map<String, List<String>>): Map<String, List<String>> =
+        headers.mapValues { (name, values) ->
+            val rule = headerRule(name, normalizedResponseRules)
+            values.map { sanitizeHeader(it, name, rule) }
         }
-        return captured
-    }
+
+    /** Drops free-form transport details, which can contain unstructured credentials. */
+    @Suppress("UNUSED_PARAMETER")
+    fun redactErrorMessage(message: String): String = "Network request failed"
 
     fun redact(url: HttpUrl): APITraceRedactedUrl {
         val captured = linkedMapOf<String, APITraceCapturedField>()
-        val sanitizedUrl = url.newBuilder()
-            .username("")
-            .password("")
-            .fragment(null)
-            .query(null)
-
+        val sanitizedUrl = url.newBuilder().username("").password("").fragment(null).query(null)
+            .encodedPath(stripJwt(url.encodedPath))
         for (index in 0 until url.querySize) {
             val name = url.queryParameterName(index)
-            val mode = queryItemRules[name] ?: continue
-            val value = url.queryParameterValue(index) ?: ""
-            val sanitizedValue = sanitizeValue(mode, value)
-            sanitizedUrl.addQueryParameter(name, sanitizedValue)
+            val value = url.queryParameterValue(index)
+            val rule = parameterRule(name)
+            val sanitized = rule.apply(value.orEmpty())
+            if (name.isNotEmpty() || value != null) {
+                captured[name] = APITraceCapturedField(rule.mode, captured[name]?.values.orEmpty() + sanitized)
+            }
+            sanitizedUrl.addQueryParameter(name, if (value == null && rule != Rule.Replace) null else sanitized)
+        }
+        return APITraceRedactedUrl(sanitizedUrl.build().toString(), captured)
+    }
 
-            val existing = captured[name]
-            if (existing == null) {
-                captured[name] = APITraceCapturedField(
-                    mode = mode,
-                    values = mutableListOf(sanitizedValue),
-                )
-            } else {
-                captured[name] = existing.copy(values = existing.values + sanitizedValue)
+    /** Returns only valid cookie names, never cookie values or attributes. */
+    fun cookieNames(headers: Map<String, List<String>>, response: Boolean = false): List<String> {
+        val headerName = if (response) "setcookie" else "cookie"
+        return headers.asSequence()
+            .filter { APITraceCredentialNames.normalize(it.key) == headerName }
+            .flatMap { it.value.asSequence() }
+            .flatMap { if (response) it.splitToSequence(SET_COOKIE_SEPARATOR) else it.splitToSequence(';') }
+            .mapNotNull { COOKIE_NAME.find(it)?.value?.trim() }
+            .toList()
+    }
+
+    /** Sanitizes complete UTF-8 JSON or form data. Uninspectable payloads are not retained. */
+    fun redactBody(body: ByteArray, contentType: String?): String? {
+        if (body.isEmpty()) return null
+        val text = body.toString(Charsets.UTF_8)
+        if (!text.toByteArray(Charsets.UTF_8).contentEquals(body)) return null
+        val mediaType = contentType?.substringBefore(';')?.trim()?.lowercase().orEmpty()
+        return when {
+            mediaType == "application/x-www-form-urlencoded" -> sanitizeParameters(text, form = true)
+            mediaType == "application/json" || mediaType.endsWith("+json") -> redactJson(text)
+            else -> null
+        }
+    }
+
+    private fun redactJson(text: String): String? = try {
+        val tokenizer = JSONTokener(text)
+        val value = tokenizer.nextValue()
+        if (tokenizer.nextClean() != '\u0000') {
+            null
+        } else {
+            when (val sanitized = sanitizeJson(value)) {
+                is String -> JSONObject.quote(sanitized)
+                is Number -> JSONObject.numberToString(sanitized)
+                else -> sanitized.toString()
             }
         }
-
-        return APITraceRedactedUrl(
-            url = sanitizedUrl.build().toString(),
-            queryItems = captured,
-        )
+    } catch (_: JSONException) {
+        null
+    } catch (_: StackOverflowError) {
+        null
     }
 
-    /**
-     * Sanitizes response headers. Unlike request headers, response headers are captured
-     * by default; headers with an [APITraceCaptureMode.INCLUDES] rule keep presence only.
-     */
-    fun redactResponseHeaders(headers: Map<String, List<String>>): Map<String, List<String>> {
-        if (headers.isEmpty()) {
-            return emptyMap()
+    private fun sanitizeJson(value: Any, name: String = ""): Any = when (val rule = parameterRule(name)) {
+        Rule.Keep -> value
+        Rule.Replace -> APITraceCredentialNames.MARKER
+        Rule.Inspect -> when (value) {
+            is JSONObject -> JSONObject().apply {
+                value.keys().forEach { key -> put(key, sanitizeJson(value.get(key), key)) }
+            }
+            is JSONArray -> JSONArray().apply {
+                for (index in 0 until value.length()) put(sanitizeJson(value.get(index)))
+            }
+            is String -> stripJwt(value)
+            else -> value
         }
+    }
 
-        val captured = linkedMapOf<String, List<String>>()
-        headers.forEach { (name, values) ->
-            val mode = normalizedResponseHeaderRules[name.lowercase()] ?: APITraceCaptureMode.EXACT
-            captured[name] = values.map { sanitizeValue(mode, it) }
+    private fun sanitizeParameters(input: String, form: Boolean): String? = try {
+        input.split('&').joinToString("&") { pair ->
+            if (pair.isEmpty()) return@joinToString pair
+            val encodedName = pair.substringBefore('=')
+            val name = URLDecoder.decode(encodedName, "UTF-8")
+            val value = URLDecoder.decode(pair.substringAfter('=', ""), "UTF-8")
+            val rule = parameterRule(name)
+            val sanitized = rule.apply(value)
+            if (rule == Rule.Replace || value != sanitized) {
+                val encoded = URLEncoder.encode(sanitized, "UTF-8")
+                encodedName + "=" + if (form) encoded else encoded.replace("+", "%20")
+            } else {
+                pair
+            }
         }
-        return captured
+    } catch (_: IllegalArgumentException) {
+        null
     }
 
-    /**
-     * Strips query strings from URLs embedded in error messages, which would otherwise
-     * bypass query-item redaction.
-     */
-    fun redactErrorMessage(message: String): String {
-        return message.replace(ERROR_MESSAGE_QUERY_REGEX, "$1")
+    private fun headerRule(name: String, custom: Map<String, APITraceCaptureMode>): Rule {
+        val normalized = APITraceCredentialNames.normalize(name)
+        return when {
+            normalized in credentials.exceptHeaders -> Rule.Keep
+            normalized in credentials.headers || custom[normalized] == APITraceCaptureMode.INCLUDES -> Rule.Replace
+            else -> Rule.Inspect
+        }
     }
 
-    private fun sanitizeValue(mode: APITraceCaptureMode, originalValue: String): String {
-        return when (mode) {
-            APITraceCaptureMode.EXACT -> originalValue
-            APITraceCaptureMode.INCLUDES -> replacement
+    private fun parameterRule(name: String): Rule {
+        val normalized = APITraceCredentialNames.normalize(name)
+        return when {
+            normalized in credentials.exceptQueryParameters -> Rule.Keep
+            normalized in credentials.queryParameters ||
+                normalizedQueryRules[normalized] == APITraceCaptureMode.INCLUDES -> Rule.Replace
+            else -> Rule.Inspect
+        }
+    }
+
+    private fun sanitizeHeader(value: String, name: String, rule: Rule): String {
+        if (rule != Rule.Inspect) return rule.apply(value)
+        return when (name.lowercase()) {
+            "location", "content-location", "referer" -> sanitizeLink(value) ?: APITraceCredentialNames.MARKER
+            "refresh" -> {
+                val delimiter = REFRESH_DELIMITER.find(value) ?: return stripJwt(value)
+                val url = value.substring(delimiter.range.last + 1).trim(' ', '\'', '"')
+                stripJwt(value.substring(0, delimiter.range.last + 1)) +
+                    (sanitizeLink(url) ?: APITraceCredentialNames.MARKER)
+            }
+            else -> stripJwt(value)
+        }
+    }
+
+    private fun sanitizeLink(value: String): String? {
+        val uri = try {
+            URI(value)
+        } catch (_: URISyntaxException) {
+            return null
+        }
+        if (uri.isOpaque) return null
+        val authority = uri.rawAuthority
+        val prefix = (uri.scheme?.let { "$it:" } ?: "") +
+            (authority?.let { "//" + it.substringAfterLast('@') } ?: "") + uri.rawPath.orEmpty()
+        val query = uri.rawQuery ?: return stripJwt(prefix)
+        return sanitizeParameters(query, form = false)?.let { stripJwt(prefix) + "?" + it }
+    }
+
+    private enum class Rule {
+        Keep,
+        Replace,
+        Inspect,
+        ;
+
+        val mode: APITraceCaptureMode
+            get() = if (this == Replace) APITraceCaptureMode.INCLUDES else APITraceCaptureMode.EXACT
+
+        fun apply(value: String): String = when (this) {
+            Keep -> value
+            Replace -> APITraceCredentialNames.MARKER
+            Inspect -> stripJwt(value)
         }
     }
 
     companion object {
-        /**
-         * Response headers that carry credentials or session material and are therefore
-         * redacted unless a rule explicitly opts them back in.
-         *
-         * Declared before [DEFAULT], which captures it via a default parameter.
-         */
+        /** Headers redacted by the default credential policy. */
         @JvmField
-        val DEFAULT_RESPONSE_HEADER_RULES: Map<String, APITraceCaptureMode> = mapOf(
-            "Set-Cookie" to APITraceCaptureMode.INCLUDES,
-            "Set-Cookie2" to APITraceCaptureMode.INCLUDES,
-            "Authorization" to APITraceCaptureMode.INCLUDES,
-            "Content-Location" to APITraceCaptureMode.INCLUDES,
-            "Location" to APITraceCaptureMode.INCLUDES,
-            "Proxy-Authenticate" to APITraceCaptureMode.INCLUDES,
-            "Refresh" to APITraceCaptureMode.INCLUDES,
-            "WWW-Authenticate" to APITraceCaptureMode.INCLUDES,
-        )
+        val DEFAULT_RESPONSE_HEADER_RULES: Map<String, APITraceCaptureMode> =
+            (APITraceCredentialNames.headers + APITraceCredentialNames.importOnlyHeaders)
+                .associateWith { APITraceCaptureMode.INCLUDES }
+
+        private val COOKIE_NAME = Regex("""^\s*[!#$%&'*+\-.^_`|~0-9A-Za-z]+(?=\s*=)""")
+        private val SET_COOKIE_SEPARATOR = Regex(""",(?=\s*[!#$%&'*+\-.^_`|~0-9A-Za-z]+\s*=)""")
+        private val REFRESH_DELIMITER = Regex(""";\s*url\s*=\s*""", RegexOption.IGNORE_CASE)
 
         @JvmField
         val DEFAULT = APITraceRedactor()
 
-        private val ERROR_MESSAGE_QUERY_REGEX = Regex("""(https?://[^\s?'"<>]*)\?[^\s'"<>]*""")
+        private fun stripJwt(value: String): String = APITraceCredentialNames.jwtPattern.replace(value, "$1.$2.redacted")
+
+        private fun normalizeRules(rules: Map<String, APITraceCaptureMode>): Map<String, APITraceCaptureMode> =
+            buildMap {
+                rules.forEach { (name, mode) ->
+                    val key = APITraceCredentialNames.normalize(name)
+                    if (get(key) != APITraceCaptureMode.INCLUDES) put(key, mode)
+                }
+            }
     }
 }
 
