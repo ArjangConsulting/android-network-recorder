@@ -1,5 +1,6 @@
 package com.apitrace
 
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
 import okhttp3.Request
 import okhttp3.Response
@@ -7,7 +8,6 @@ import okio.Buffer
 import okio.Sink
 import okio.Timeout
 import okio.buffer
-import okio.ByteString.Companion.toByteString
 import java.io.IOException
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicLong
@@ -45,6 +45,7 @@ class APITraceOkHttpBackend(
         val startedAtEpochMs = System.currentTimeMillis()
 
         val redactedUrl = redactor.redact(request.url)
+        val endpoint = redactedUrl.url.toHttpUrlOrNull()?.encodedPath.orEmpty()
         val requestCapture = buildRequestCapture(request, redactedUrl)
 
         try {
@@ -55,7 +56,7 @@ class APITraceOkHttpBackend(
                     durationMs = elapsedMs(startNs),
                     method = request.method,
                     url = redactedUrl.url,
-                    endpoint = request.url.encodedPath,
+                    endpoint = endpoint,
                     request = requestCapture,
                     response = buildResponseCapture(response),
                 ),
@@ -69,10 +70,10 @@ class APITraceOkHttpBackend(
                     durationMs = elapsedMs(startNs),
                     method = request.method,
                     url = redactedUrl.url,
-                    endpoint = request.url.encodedPath,
+                    endpoint = endpoint,
                     request = requestCapture,
                     response = null,
-                    errorMessage = ioe.message?.let(redactor::redactErrorMessage),
+                    errorMessage = "Network request failed",
                 ),
                 captureGeneration,
             )
@@ -114,26 +115,26 @@ class APITraceOkHttpBackend(
         request: Request,
         redactedUrl: APITraceRedactedUrl,
     ): APITraceRecord.RequestData {
-        val headers = redactor.redact(request.headers.toMultimap())
-        val bodyCapture = if (captureRequestBodies) extractRequestBody(request) else BodyCapture()
+        val rawHeaders = request.headers.toMultimap().toMutableMap()
+        val contentType = request.body?.contentType()?.toString() ?: request.header("Content-Type")
+        if (contentType != null) rawHeaders["content-type"] = listOf(contentType)
 
         return APITraceRecord.RequestData(
-            headers = headers,
+            headers = redactor.redact(rawHeaders),
             queryItems = redactedUrl.queryItems,
-            bodyText = bodyCapture.text,
-            bodyBase64 = bodyCapture.base64,
+            bodyText = if (captureRequestBodies) extractRequestBody(request, contentType) else null,
+            cookieNames = redactor.cookieNames(rawHeaders),
         )
     }
 
     private fun buildResponseCapture(response: Response): APITraceRecord.ResponseData {
-        val headers = redactor.redactResponseHeaders(response.headers.toMultimap())
-        val bodyCapture = if (captureResponseBodies) peekResponseBody(response) else BodyCapture()
+        val rawHeaders = response.headers.toMultimap()
 
         return APITraceRecord.ResponseData(
             statusCode = response.code,
-            headers = headers,
-            bodyText = bodyCapture.text,
-            bodyBase64 = bodyCapture.base64,
+            headers = redactor.redactResponseHeaders(rawHeaders),
+            bodyText = if (captureResponseBodies) peekResponseBody(response) else null,
+            cookieNames = redactor.cookieNames(rawHeaders, response = true),
         )
     }
 
@@ -155,19 +156,19 @@ class APITraceOkHttpBackend(
         APITraceHarFile.recordsChanged()
     }
 
-    private fun extractRequestBody(request: Request): BodyCapture {
-        val body = request.body ?: return BodyCapture()
-        if (body.isOneShot() || body.isDuplex()) {
-            return BodyCapture()
+    private fun extractRequestBody(request: Request, contentType: String?): String? {
+        val body = request.body ?: return null
+        if (body.isOneShot() || body.isDuplex() || !isIdentityEncoding(request.header("Content-Encoding"))) {
+            return null
         }
 
         val contentLength = try {
             body.contentLength()
         } catch (_: IOException) {
-            return BodyCapture()
+            return null
         }
         if (maxBodyBytes == 0L || contentLength < 0 || contentLength > maxBodyBytes) {
-            return BodyCapture()
+            return null
         }
 
         return try {
@@ -188,28 +189,28 @@ class APITraceOkHttpBackend(
             }.buffer()
             body.writeTo(boundedSink)
             boundedSink.flush()
-            decodeBytes(prefix.readByteArray(), truncated = bytesSeen > maxBodyBytes)
+            if (bytesSeen == contentLength) redactor.redactBody(prefix.readByteArray(), contentType) else null
         } catch (_: Exception) {
-            BodyCapture()
+            null
         }
     }
 
-    private fun peekResponseBody(response: Response): BodyCapture {
-        val body = response.body ?: return BodyCapture()
-        if (maxBodyBytes == 0L || body.contentLength() < 0) return BodyCapture()
-
-        // peekBody blocks until maxBodyBytes arrive or the stream ends, which would
-        // stall server-sent events and other never-ending responses.
-        if (response.code == 101 || isEventStream(response.header("Content-Type"))) {
-            return BodyCapture()
+    private fun peekResponseBody(response: Response): String? {
+        val body = response.body ?: return null
+        val contentLength = body.contentLength()
+        val contentType = response.header("Content-Type")
+        if (contentLength <= 0 || contentLength > maxBodyBytes ||
+            response.code == 101 || isEventStream(contentType) || !isIdentityEncoding(response.header("Content-Encoding"))
+        ) {
+            return null
         }
 
         return try {
-            val peeked = response.peekBody(maxBodyBytes)
+            val peeked = response.peekBody(contentLength)
             val bytes = peeked.bytes()
-            decodeBytes(bytes, truncated = bytes.size.toLong() >= maxBodyBytes)
+            if (bytes.size.toLong() == contentLength) redactor.redactBody(bytes, contentType) else null
         } catch (_: Exception) {
-            BodyCapture()
+            null
         }
     }
 
@@ -218,24 +219,8 @@ class APITraceOkHttpBackend(
             .equals("text/event-stream", ignoreCase = true)
     }
 
-    private fun decodeBytes(bytes: ByteArray, truncated: Boolean): BodyCapture {
-        if (bytes.isEmpty()) {
-            return BodyCapture()
-        }
-
-        // A byte-limit cut can split a multi-byte UTF-8 character; drop the partial
-        // trailing character instead of misclassifying the body as binary.
-        val maxTrim = if (truncated) minOf(3, bytes.size - 1) else 0
-        for (trim in 0..maxTrim) {
-            val candidate = if (trim == 0) bytes else bytes.copyOf(bytes.size - trim)
-            val text = candidate.toString(Charsets.UTF_8)
-            if (text.toByteArray(Charsets.UTF_8).contentEquals(candidate)) {
-                return BodyCapture(text = text)
-            }
-        }
-
-        return BodyCapture(base64 = bytes.toByteString().base64())
-    }
+    private fun isIdentityEncoding(contentEncoding: String?): Boolean =
+        contentEncoding == null || contentEncoding.trim().equals("identity", ignoreCase = true)
 
     private fun isDebuggableApp(): Boolean {
         return runCatching {
@@ -257,9 +242,4 @@ class APITraceOkHttpBackend(
             )
         }
     }
-
-    private data class BodyCapture(
-        val text: String? = null,
-        val base64: String? = null,
-    )
 }

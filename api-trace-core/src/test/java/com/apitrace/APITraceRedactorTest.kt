@@ -21,7 +21,7 @@ class APITraceRedactorTest {
         )
 
         assertEquals(listOf("application/json"), headers["Accept"]?.values)
-        assertEquals(listOf("<mocked>"), headers["Authorization"]?.values)
+        assertEquals(listOf("[redacted]"), headers["Authorization"]?.values)
         assertEquals(listOf("request-42"), headers["X-Request-Id"]?.values)
     }
 
@@ -39,18 +39,19 @@ class APITraceRedactorTest {
         )
 
         assertEquals(listOf("application/json"), headers["content-type"])
-        assertEquals(listOf("<mocked>", "<mocked>"), headers["set-cookie"])
-        assertEquals(listOf("<mocked>"), headers["WWW-Authenticate"])
+        assertEquals(listOf("[redacted]", "[redacted]"), headers["set-cookie"])
+        assertEquals(listOf("[redacted]"), headers["WWW-Authenticate"])
         assertEquals(listOf("req-42"), headers["x-request-id"])
     }
 
     @Test
-    fun `response header rules can opt sensitive headers back in or add new ones`() {
+    fun `legacy rules can add sensitive headers but exact cannot bypass redaction`() {
         val redactor = APITraceRedactor(
             responseHeaderRules = mapOf(
                 "Set-Cookie" to APITraceCaptureMode.EXACT,
                 "X-Internal-Token" to APITraceCaptureMode.INCLUDES,
             ),
+            replacement = "<legacy>",
         )
 
         val headers = redactor.redactResponseHeaders(
@@ -61,21 +62,21 @@ class APITraceRedactorTest {
             )
         )
 
-        assertEquals(listOf("session=abc123"), headers["set-cookie"])
-        assertEquals(listOf("<mocked>"), headers["x-internal-token"])
-        assertEquals(listOf("<mocked>"), headers["www-authenticate"])
+        assertEquals(listOf("[redacted]"), headers["set-cookie"])
+        assertEquals(listOf("[redacted]"), headers["x-internal-token"])
+        assertEquals(listOf("[redacted]"), headers["www-authenticate"])
     }
 
     @Test
-    fun `error messages have url query strings stripped`() {
+    fun `free-form error details are not retained`() {
         val redactor = APITraceRedactor.DEFAULT
 
         assertEquals(
-            "Failed to connect to https://api.example.com/v1/users",
+            "Network request failed",
             redactor.redactErrorMessage("Failed to connect to https://api.example.com/v1/users?token=secret&page=1"),
         )
         assertEquals(
-            "The request timed out. Retry? Yes/no",
+            "Network request failed",
             redactor.redactErrorMessage("The request timed out. Retry? Yes/no"),
         )
     }

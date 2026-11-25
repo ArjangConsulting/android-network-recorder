@@ -81,7 +81,7 @@ after every recorded exchange. `APITrace.clear()` rewrites it empty.
 - `APITrace.exportHar(records, pretty)` (export a given list of records)
 - `APITraceHarFile.enable(file)`, `APITraceHarFile.enableFromLaunchIntent(application)`, `APITraceHarFile.defaultFile(context)`
 - `APITraceConsoleFormatter(maxBodyCharacters).format(record)`
-- `APITraceRedactor(headerRules, queryItemRules, responseHeaderRules, replacement)`
+- `APITraceRedactor(headerRules, queryItemRules, responseHeaderRules, replacement, redact)`
 - `APITraceBootstrap.install(okHttpBuilder, maxRecords, redactor, maxBodyBytes, captureRequestBodies, captureResponseBodies, allowInNonDebuggableBuilds)` (from debug/noop module)
 
 All public symbols are documented with KDoc in `api-trace-core` and public bootstrap classes.
@@ -115,13 +115,13 @@ Each record is one full exchange (request + response/failure):
   "startedAt": "2026-03-05T03:27:10.123Z",
   "durationMs": 84,
   "method": "GET",
-  "url": "https://api.example.com/v1/users?page=1&token=%3Cmocked%3E",
+  "url": "https://api.example.test/v1/users?page=1&token=%5Bredacted%5D",
   "endpoint": "/v1/users",
   "request": {
     "headers": {
       "Authorization": {
         "mode": "includes",
-        "values": ["<mocked>"]
+        "values": ["[redacted]"]
       },
       "X-Trace-Id": {
         "mode": "exact",
@@ -135,7 +135,7 @@ Each record is one full exchange (request + response/failure):
       },
       "token": {
         "mode": "includes",
-        "values": ["<mocked>"]
+        "values": ["[redacted]"]
       }
     },
     "bodyText": null,
@@ -156,62 +156,60 @@ Each record is one full exchange (request + response/failure):
 The Kotlin model stores `startedAtEpochMs` (epoch milliseconds); exports serialize it as
 ISO 8601 `startedAt` with millisecond precision to match the iOS SDK's wire format.
 
-### Header Behavior
+### Credential Redaction
 
-- Request headers are opt-in via `headerRules`.
-- `EXACT` preserves the original value.
-- `INCLUDES` stores only presence semantics using the configured replacement value.
-- Response headers are captured by default, except credential-bearing and redirect headers
-  (`Set-Cookie`, `Set-Cookie2`, `Authorization`, `Proxy-Authenticate`, `WWW-Authenticate`,
-  `Location`, `Content-Location`, `Refresh`), which are replaced with the replacement value.
-  Custom `responseHeaderRules` extend these defaults. Override a default with `EXACT`
-  (`EXACT` opts a default back in; `INCLUDES` redacts additional headers).
-- OkHttp's `toMultimap()` lowercases stored header names; rule matching is
-  case-insensitive either way.
+Both request and response headers and all URL query parameters are captured. Built-in
+credential names and HAR-import extras keep only presence: `[redacted]` in values and
+`%5Bredacted%5D` in URLs and form data. Names match exactly after lowercasing and removing
+`-` and `_`; for example, `api_key`, `apiKey` and `API-KEY` match, while `sort_key` does
+not. A JWT under an unlisted name keeps its header and payload but loses its signature.
+Cookie headers are redacted; HAR cookie entries retain the name and a placeholder value.
 
-### Query Behavior
-
-- Query items are opt-in via `queryItemRules`.
-- Only configured query items remain in the stored `url`.
-- Use `INCLUDES` for sensitive items such as `token` when the real value should not be persisted.
-
-## Example Configuration
+Pass extra names and exceptions to `APITraceRedactor(redact = ...)`. When loading a shared
+`redact` block, map `headers`, `query_parameters`, and `except` to `headers`,
+`queryParameters`, and `except`; the nested object has the same two name lists. Query
+names also apply to form fields and nested JSON keys. Exceptions keep the original value,
+including a JWT. Attempts to except `Authorization`, `Proxy-Authorization`, `Cookie`, or
+`Set-Cookie` are ignored and log a warning. Use exceptions only for values safe to share.
 
 ```kotlin
 APITraceBootstrap.install(
     okHttpBuilder = okHttpBuilder,
-    maxRecords = 500,
-    maxBodyBytes = 64 * 1024,
     captureRequestBodies = true,
     captureResponseBodies = true,
     redactor = APITraceRedactor(
-        headerRules = mapOf(
-            "Authorization" to APITraceCaptureMode.INCLUDES,
-            "X-Trace-Id" to APITraceCaptureMode.EXACT,
-        ),
-        queryItemRules = mapOf(
-            "page" to APITraceCaptureMode.EXACT,
-            "token" to APITraceCaptureMode.INCLUDES,
+        redact = APITraceRedactionConfiguration(
+            headers = listOf("X-App-Device"),
+            queryParameters = listOf("device_ref"),
+            except = APITraceRedactionConfiguration.Exceptions(
+                headers = listOf("X-CSRF-Token"),
+                queryParameters = listOf("token"),
+            ),
         ),
     ),
 )
 ```
+
+Existing `headerRules`, `queryItemRules`, and `responseHeaderRules` can still add
+redactions with `INCLUDES`. An `EXACT` rule no longer overrides the credential policy;
+use `except` for an explicit override. The legacy `replacement` argument is accepted for
+source compatibility; capture always writes the HAR-compatible marker. OkHttp lowercases
+the stored header names.
 
 ## Notes
 
 - Debug module installs an **application** interceptor, so captured response bodies are
   observed after OkHttp's transparent gzip decoding. Redirects are followed inside OkHttp,
   so one record covers the whole call and reflects the final response.
-- Body capture is disabled by default because bodies are stored verbatim with no field-level
-  redaction. Explicitly enable it only for endpoints whose payloads are safe to retain.
-- Enabled response body capture uses `peekBody` with a size cap (`maxBodyBytes`, default 64 KB)
-  and skips unknown-length streams, `text/event-stream`, and protocol upgrades. Request bodies
-  are captured only when repeatable and no larger than the limit, avoiding unbounded buffering.
-- Stored URLs always omit user credentials and fragments. Query items remain opt-in.
+- Body capture is off by default. When enabled, only complete UTF-8 JSON and form-encoded
+  payloads within `maxBodyBytes` (default 64 KB) are kept, after redaction. Unsupported,
+  malformed, and partial bodies are omitted. Request bodies must be repeatable; response
+  capture skips unknown-length streams and protocol upgrades.
+- Stored URLs omit user information and fragments. Query fields are sanitized in both
+  the request URL and `queryString`, including in captured redirect URL headers.
 - `start()` refuses to enable capture when the host app is not debuggable, as defense in
   depth against the debug module accidentally shipping in a release build. Internal
   non-debuggable QA builds can opt in with `allowInNonDebuggableBuilds = true`.
-- Error messages are sanitized: query strings in embedded URLs are stripped before storage.
-- Records live in memory only; exports (`exportJson`/`exportHar`) still contain captured
-  response data, so treat exported files as sensitive.
+- Transport failures use a fixed message rather than storing free-form network errors.
+- Treat exports as sensitive: unlisted secrets, excepted values, and JWT payload claims can remain.
 - Capture only happens between `APITrace.start()` and `APITrace.stop()`; the interceptor still forwards every request when capture is disabled.
